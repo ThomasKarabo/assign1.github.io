@@ -1,0 +1,360 @@
+---
+title: "DSC4812 Assign 2 - TK Mohlapo"
+author: "Thomas Mohlapo"
+date: "2026-06-07"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+Install the necessary libraries
+```{r}
+# Load the forecasting library
+library(fpp3)
+library(patchwork)
+library(tsibble)
+library(tidyr)
+```
+
+## Question 1
+Find an appropriate Box-Cox transformation in order to stabilise the variance of one of the following data series,
+depending on your student number.
+• Student numbers starting with 1, 2 or 3: use Tobacco from aus_production.
+• Student numbers starting with 4 or 5: use Gas from aus_production.
+• All others use use Electricity from aus_production.
+Comment on your result.
+
+```{r}
+# Load data
+tobacco <- aus_production %>% 
+  select(Tobacco) %>% 
+  filter(!is.na(Tobacco))
+
+# Find optimal lambda
+lambda <- tobacco %>% 
+  features(Tobacco, features = guerrero) %>% 
+  pull(lambda_guerrero)
+
+cat("Optimal Box-Cox lambda:", lambda, "\n")
+
+# Apply transformation and plot
+tobacco_transformed <- tobacco %>% 
+  mutate(Tobacco_bc = box_cox(Tobacco, lambda))
+
+autoplot(tobacco, Tobacco) + 
+  ggtitle("Original Tobacco Production") +
+  ylab("Tobacco")
+
+autoplot(tobacco_transformed, Tobacco_bc) + 
+  ggtitle(paste("Box-Cox transformed (lambda =", round(lambda, 3), ")")) +
+  ylab("Transformed Tobacco")
+
+```
+
+The lambda is = 0.926 which is close to 1. Which corresponds with what we know about the Box-Cox transformation
+when lambda = 1, then there's no transformation there's just a 1 unit shift in the data points. This is what we see from the original and the transformed graph, they look quiet similar. We can also add to say that since lambda = 0.926 then the seasonal variance is stable.
+
+## Question 2
+Show both an STL and an X-11 decomposition of your time series from Question 1 and describe the results.
+```{r}
+# STL decomposition
+tobacco_stl <- tobacco_transformed %>% 
+  model(STL(Tobacco_bc ~ trend(window = 13) + season(window = 13))) %>% 
+  components()
+
+autoplot(tobacco_stl) + 
+  ggtitle("STL Decomposition of Transformed Tobacco")
+
+# X-11 decomposition
+tobacco_x11 <- tobacco_transformed %>% 
+  model(X_13ARIMA_SEATS(Tobacco_bc ~ x11())) %>% 
+  components()
+
+autoplot(tobacco_x11) + 
+  ggtitle("X-11 Decomposition of Transformed Tobacco")
+
+```
+### Trend
+We observe that there's an upward trend from 1960 - 1980s and there starts to be a decline after 1980. When comparing the 2 decomposition, STL has a smoothed out decomposition while X-11 has some zig-zags.
+### Seasonality
+The seasonality of both decompositions are similar, they show the variance of the seasonality to be growing over time.
+### Remainder
+We can see that the remainder for STL has a lot of noise compared to the remainder of X-11. This makes sense since the trend from the STL is smoothed out while the trend for X-11 has some noise.
+
+# Question 3
+Now, do the same for Business class passengers between Sydney and Brisbane from ansett. You will need to
+aggregate the data to monthly and perhaps drop some zero values or decide how to handle them.
+```{r}
+# Filter and aggregate to monthly
+brisbane_business <- ansett %>% 
+  filter(Airports == "SYD-BNE", Class == "Business") %>% 
+  index_by(Month = yearmonth(Week)) %>% 
+  summarise(Passengers = sum(Passengers, na.rm = TRUE))
+
+# Handle zeros if any
+brisbane_business <- brisbane_business %>% 
+  mutate(Passengers = ifelse(Passengers == 0, NA, Passengers)) %>% 
+  fill(Passengers)  # or use interpolation
+
+# Box-Cox
+lambda_b <- brisbane_business %>% 
+  features(Passengers, features = guerrero) %>% 
+  pull(lambda_guerrero)
+
+brisbane_bc <- brisbane_business %>% 
+  mutate(Passengers_bc = box_cox(Passengers, lambda_b))
+
+# Decompositions
+stl_b <- brisbane_bc %>% 
+  model(STL(Passengers_bc)) %>% 
+  components()
+
+x11_b <- brisbane_bc %>% 
+  model(X_13ARIMA_SEATS(Passengers_bc ~ x11())) %>% 
+  components()
+
+autoplot(stl_b)
+autoplot(x11_b)
+```
+
+# Question 4
+Do Section 8.8, Exercise 5. You may not use the UK but should select a country the name of which starts with
+the same letter as your surname (or as closely as possible).
+Data set global_economy contains the annual Exports from many countries. Select one country to analyse.
+
+a. Plot the Exports series and discuss the main features of the data.
+```{r}
+# Filter Malaysia from global_economy
+mal_economy <- global_economy |>
+  filter(Country == "Malaysia")
+
+# Plot the Exports series
+mal_economy |>
+  autoplot(Exports) +
+  labs(title = "Exports: Malaysia",
+       y = "Exports (% of GDP)")
+```
+b. Use an ETS(A,N,N) model to forecast the series, and plot the forecasts.
+```{r}
+fit_ann <- mal_economy |>
+  model(ANN = ETS(Exports ~ error("A") + trend("N") + season("N")))
+
+fc_ann <- fit_ann |>
+  forecast(h = 10)
+
+fc_ann |>
+  autoplot(mal_economy) +
+  labs(title = "ETS(A,N,N) forecasts: Malaysia Exports",
+       y = "Exports (% of GDP)")
+
+report(fit_ann)
+```
+c. Compute the RMSE values for the training data.
+```{r}
+# RMSE for training data (ETS(A,N,N))
+accuracy(fit_ann) |>
+  select(.model, RMSE)
+```
+d. Compare the results to those from an ETS(A,A,N) model. (Remember that the trended model is using one more parameter than the simpler model.) Discuss the merits of the two forecasting methods for this data set.
+```{r}
+fit_both <- mal_economy |>
+  model(
+    ANN = ETS(Exports ~ error("A") + trend("N") + season("N")),
+    AAN = ETS(Exports ~ error("A") + trend("A") + season("N"))
+  )
+
+# Compare RMSE (and other accuracy measures) side by side
+accuracy(fit_both) |>
+  select(.model, RMSE, MAE, AIC = NULL)
+
+# Compare AICc, since AAN uses one more parameter
+glance(fit_both) |>
+  select(.model, AIC, AICc, BIC)
+```
+When comparing the RMSE and MAE values we can clearly see that AAN achieves lower errors compared to ANN. 
+- A,A,N uses an extra parameter to help fit the data while A,N,N doesn't.
+
+e. Compare the forecasts from both methods. Which do you think is best?
+- While AAN has a better in-sample fit (lower RMSE), the simpler ANN model is actually the better choice according to the AICc. This suggests that Malaysia's export data does not have a strong, consistent, long-term trend that warrants the extra parameter.
+
+f. Calculate a 95% prediction interval for the first forecast for each model, using the RMSE values and assuming normal errors. Compare your intervals with those produced using R.
+```{r}
+# Get RMSE for each model from training accuracy
+rmse_vals <- accuracy(fit_both) |>
+  select(.model, RMSE)
+rmse_vals
+
+# Get first-period point forecasts
+first_fc <- fc_ann |>
+  as_tibble() |>
+  slice(1) |>
+  select(.model, Exports = .mean)
+
+fc_aan <- fit_both |>
+  select(AAN) |>
+  forecast(h = 10)
+
+first_fc_aan <- fc_aan |>
+  as_tibble() |>
+  slice(1) |>
+  select(.model, Exports = .mean)
+
+first_forecasts <- bind_rows(first_fc, first_fc_aan)
+first_forecasts
+
+# Manual 95% PI = point forecast ± 1.96 * RMSE
+pi_manual <- first_forecasts |>
+  left_join(rmse_vals, by = ".model") |>
+  mutate(
+    lower_95 = Exports - 1.96 * RMSE,
+    upper_95 = Exports + 1.96 * RMSE
+  )
+
+pi_manual
+```
+# Question 5
+Section 8.8 Exercise 11 but use Japan arrivals and not those from New Zealand. You may provide minimal
+narrative here as your narrative will be marked in Question 6.
+
+For this exercise use the quarterly number of arrivals to Australia from Japan, 1981 Q1 – 2012 Q3, from data set aus_arrivals.
+
+a. Make a time plot of your data and describe the main features of the series.
+```{r}
+# Filter Japan arrivals
+jp_arrivals <- aus_arrivals |>
+  filter(Origin == "Japan")
+
+jp_arrivals
+
+# Time plot
+jp_arrivals |>
+  autoplot(Arrivals) +
+  labs(title = "Quarterly Arrivals to Australia from Japan",
+       y = "Number of arrivals")
+```
+- Trend: There's an upward trend, from 1980 to 1995/1996 and a downward trend from 1996 onwards.
+- Seasonality: Because this is quarterly data, you can see a distinct repeating pattern of peaks and troughs that happens every single year. We can also notice the increasing variance in the seasonality.
+
+b. Create a training set that withholds the last two years of available data. Forecast the test set using an appropriate model for Holt-Winters’ multiplicative method.
+```{r}
+# Training/test split: withhold last 2 years (8 quarters)
+jp_train <- jp_arrivals |>
+  filter_index(. ~ "2010 Q3")
+
+jp_test <- jp_arrivals |>
+  filter_index("2010 Q4" ~ .)
+
+# Confirm split
+range(jp_train$Quarter)
+range(jp_test$Quarter)
+
+# Holt-Winters' multiplicative method (ETS with multiplicative errors, trend, mult. seasonality)
+fit_hw_mult <- jp_train |>
+  model(hw_mult = ETS(Arrivals ~ error("M") + trend("A") + season("M")))
+
+fc_hw_mult <- fit_hw_mult |>
+  forecast(new_data = jp_test)
+
+fc_hw_mult |>
+  autoplot(jp_arrivals) +
+  labs(title = "Holt-Winters' Multiplicative forecasts: Japan Arrivals")
+
+report(fit_hw_mult)
+```
+c. Why is multiplicative seasonality necessary here?
+
+Multiplicative seasonality is needed because the size of the seasonal fluctuations changes in proportion to the level of the series, rather than staying constant. As arrivals grew (or later declined) over time, the absolute size of the seasonal peaks and troughs grew (or shrank) with it.
+
+d. Forecast the two-year test set using each of the following methods:
+- an ETS model;
+- an additive ETS model applied to a log transformed series;
+- a seasonal naïve method;
+- an STL decomposition applied to the log transformed data followed by an ETS model applied to the seasonally adjusted (transformed) data.
+
+```{r}
+# Four methods on jp_train, forecasting the same 8-quarter test horizon
+
+fit_all <- jp_train |>
+  model(
+    ETS_auto   = ETS(Arrivals),
+    ETS_add_log = ETS(log(Arrivals) ~ error("A") + trend("A") + season("A")),
+    SNAIVE     = SNAIVE(Arrivals),
+    STL_ETS    = decomposition_model(
+                    STL(log(Arrivals) ~ season(window = "periodic")),
+                    ETS(season_adjust ~ error("A") + trend("A") + season("N"))
+                 )
+  )
+
+fc_all <- fit_all |>
+  forecast(new_data = jp_test)
+
+fc_all |>
+  autoplot(jp_arrivals, level = NULL) +
+  labs(title = "Forecast comparison: Japan Arrivals",
+       y = "Arrivals") +
+  guides(colour = guide_legend(title = "Model"))
+
+# Check which model ETS() picked automatically
+report(fit_all |> select(ETS_auto))
+```
+e. Which method gives the best forecasts? Does it pass the residual tests?
+
+```{r}
+# Accuracy comparison on the test set
+accuracy(fc_all, jp_arrivals) |>
+  select(.model, RMSE, MAE, MAPE, MASE) |>
+  arrange(RMSE)
+```
+Since STL_ETS has the lowest RMSE, MAE, MAPE and MASE then we choose it
+```{r}
+# Residual diagnostics for the best model
+fit_all |>
+  select(STL_ETS) |>
+  gg_tsresiduals()
+
+# Formal test for autocorrelation in residuals (Ljung-Box)
+augment(fit_all) |>
+  filter(.model == "STL_ETS") |>
+  features(.innov, ljung_box, lag = 8, dof = ifelse(TRUE, 6, 0))
+```
+
+f. Compare the same four methods using time series cross-validation instead of using a training and test set. Do you come to the same conclusions?
+```{r}
+# Time series cross-validation
+
+# Check the length of jp_arrivals first
+jp_arrivals |>
+  summarise(start = min(Quarter), end = max(Quarter), n = n())
+
+# Build CV folds - use .init large enough for STL to work reliably (need at least 2 full years)
+jp_cv <- jp_arrivals |>
+  stretch_tsibble(.init = 40, .step = 4) |>   # 10-year initial window, step by 1 year (4 quarters)
+  filter(.id != max(.id))                      # drop last fold if too short to forecast 8 ahead
+
+# Sanity check: make sure every fold has enough data
+jp_cv |>
+  as_tibble() |>
+  group_by(.id) |>
+  summarise(n = n()) |>
+  summary()
+
+# Fit models - specify h explicitly as an integer, and fit/forecast in one clean pipe
+fc_cv <- jp_cv |>
+  model(
+    ETS_auto    = ETS(Arrivals),
+    ETS_add_log = ETS(log(Arrivals) ~ error("A") + trend("A") + season("A")),
+    SNAIVE      = SNAIVE(Arrivals),
+    STL_ETS     = decomposition_model(
+                    STL(log(Arrivals) ~ season(window = "periodic")),
+                    ETS(season_adjust ~ error("A") + trend("A") + season("N"))
+                  )
+  ) |>
+  forecast(h = 8)
+
+# Accuracy averaged across all CV folds
+fc_cv |>
+  accuracy(jp_arrivals) |>
+  select(.model, RMSE, MAE, MAPE, MASE) |>
+  arrange(RMSE)
+```
